@@ -22,6 +22,9 @@ import dns.resolver
 from urllib2 import urlopen
 import netaddr
 import csv
+import multiprocessing
+import multiprocessing.pool
+import traceback
 
 def color(text, color_code):
     if sys.platform == "win32" and os.getenv("TERM") != "xterm":
@@ -46,7 +49,7 @@ def blue(text):
     return color(text, 34)
 
 
-def content_test(url, badip, func=None):
+def content_test(url, ip_list, func=None):
     """
     Test the content of url's response to see if it contains badip.
         Args:
@@ -56,7 +59,7 @@ def content_test(url, badip, func=None):
             Boolean
     """
     if func:
-        return func(url, badip)
+        return func(url, ip_list)
     else:
         try:
             request = urllib2.Request(url)
@@ -64,27 +67,40 @@ def content_test(url, badip, func=None):
             html_content = opened_request.read()
             retcode = opened_request.code
 
-            matches = retcode == 200
-            matches = matches and re.findall(re.escape(badip), html_content)
-            return len(matches) == 0
+            if retcode != 200:
+                raise Exception('Retcode: {}'.format(retcode))
+            else:
+                ret = []
+                for badip in ip_list:
+                    matches = re.findall(re.escape(badip), html_content)
+                    ret.append(len(matches) == 0)
+                return ret
         except Exception, e:
+            traceback.print_exc()
             sys.stderr.write("%s - Error! %s\n" % (url, e))
-            return True
+            return [True]*len(ip_list)
 
 CIDR_REGEX = re.compile("(([0-9]{1,3}\.){3}[0-9]{1,3}(\/([0-9]|[1-2][0-9]|3[0-2])) )")
 
-def spamhaus_check(url, ip):
+def spamhaus_check(url, ip_list):
     try:
         request = urllib2.Request(url)
         opened_request = urllib2.build_opener().open(request)
         html_content = opened_request.read()
         retcode = opened_request.code
         all_cidr = [netaddr.IPNetwork(net[0]) for net in CIDR_REGEX.findall(html_content)]
-        matches = retcode == 200
-        return matches and not bool(sum([netaddr.IPAddress(ip) in net for net in all_cidr]))
+        if retcode != 200:
+            raise Exception('Retcode: {}'.format(retcode))
+        else:
+            ret = []
+            for badip in ip_list:
+                matches = re.findall(re.escape(badip), html_content)
+                ret.append(not bool(sum([netaddr.IPAddress(ip) in net for net in all_cidr])))
+            return ret
     except Exception, e:
+        traceback.print_exc()
         sys.stderr.write("%s - Error! %s\n" % (url, e))
-        return True
+        return [True]*len(ip_list)
 
 
 bls = ["b.barracudacentral.org", "bl.spamcannibal.org", "bl.spamcop.net",
@@ -269,16 +285,50 @@ def write_csv(rows):
         writer.writerow(row)
 
 
+def check_ip_bl(ip_bl):
+    badip, bl = ip_bl
+    try:
+        my_resolver = dns.resolver.Resolver()
+        query = '.'.join(reversed(str(badip).split("."))) + "." + bl
+        my_resolver.timeout = 5
+        my_resolver.lifetime = 5
+        answers = my_resolver.query(query, "A")
+        answer_txt = my_resolver.query(query, "TXT")
+
+        return False, (red(badip + ' is listed in ' + bl) + ' (%s: %s)' % (answers[0], answer_txt[0]))
+
+    except dns.resolver.NXDOMAIN:
+        return True, (green(badip + ' is not listed in ' + bl))
+        #GOOD = GOOD + 1
+
+    except dns.resolver.Timeout:
+        return True, (blink('WARNING: Timeout querying ' + bl))
+
+    except dns.resolver.NoNameservers:
+        return True, (blink('WARNING: No nameservers for ' + bl))
+
+    except dns.resolver.NoAnswer:
+        return True, (blink('WARNING: No answer for ' + bl))
+
+
+parser = argparse.ArgumentParser(description='Is This IP Bad?')
+input_parser = parser.add_mutually_exclusive_group(required=True)
+input_parser.add_argument('-i', '--ip', nargs='*', help='IP address to check', action='store', dest='ip')
+input_parser.add_argument('-', '--stdin', help='Get IP addresses from stdin CTRL+D to stop (EOF)', action='store_true')
+parser.add_argument('--success', help='Also display GOOD', required=False, action="store_true")
+parser.add_argument('--output', '-o', choices=['csv', 'standard'], default='standard', help='Output format', required=False, action="store", dest='output')
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Is This IP Bad?')
-    parser.add_argument('-i', '--ip', help='IP address to check')
-    parser.add_argument('--success', help='Also display GOOD', required=False, action="store_true")
-    parser.add_argument('--output', '-o', choices=['csv', 'standard'], default='standard', help='Output format', required=False, action="store", dest='output')
     args = parser.parse_args()
 
-    if args is not None and args.ip is not None and len(args.ip) > 0:
-        badip = args.ip
-        output_format = args.output
+    output_format = args.output
+    if args.ip:
+        ip_list = args.ip
+    elif args.stdin:
+        ip_list = []
+        for line in sys.stdin:
+            ip_list.append(line.strip())
     else:
         my_ip = urlopen('http://icanhazip.com').read().rstrip()
         output_format = 'standard'
@@ -291,97 +341,79 @@ if __name__ == "__main__":
         resp = raw_input('Would you like to check {0} ? (Y/N):'.format(my_ip))
 
         if resp.lower() in ["yes", "y"]:
-            badip = my_ip
+            ip_list = [my_ip]
         else:
             badip = raw_input(blue("\nWhat IP would you like to check?: "))
             if badip is None or badip == "":
                 sys.exit("No IP address to check.")
+            else:
+                ip_list = [badip]
 
+    results = dict([(ip, {'good': 0, 'bad': 0}) for ip in ip_list])
     #IP INFO
-    reversed_dns = socket.getfqdn(badip)
-    geoip = urllib.urlopen('http://api.hackertarget.com/geoip/?q='
+    for badip in ip_list:
+        reversed_ = socket.getfqdn(badip)
+        geo_ = urllib.urlopen('http://api.hackertarget.com/geoip/?q='
                            + badip).read().rstrip()
 
-    if output_format == 'standard':
-        print(blue('\nThe FQDN for {0} is {1}\n'.format(badip, reversed_dns)))
-        print(red('Geolocation IP Information:'))
-        print(blue(geoip))
-        print('\n')
-    elif output_format == 'csv':
-        geo = GeoParser.parse(geoip)
-        geo['coord'] = "{}-{}".format(geo.pop('latitude', ''), geo.pop('longitude', ''))
+        if output_format == 'standard':
+            print(blue('\nThe FQDN for {0} is {1}\n'.format(badip, reversed_)))
+            print(red('Geolocation IP Information for {0}:'.format(badip)))
+            print(blue(geo_))
+            print('\n')
+        elif output_format == 'csv':
+            geo = GeoParser.parse(geo_)
+            geo['coord'] = "{},{}".format(geo.pop('latitude', ''), geo.pop('longitude', ''))
+            results[badip].update(geo, fqdn=reversed_)
 
-    BAD = 0
-    GOOD = 0
-
-    if output_format == 'csv':
-        csv_d = dict(geo, fqdn=reversed_dns)
 
     for name, url, succ, fail, mal, func in URLS:
-        if content_test(url, badip, func):
-	    if args.success and output_format == 'standard':
-                print(green('{0} {1}'.format(badip, succ)))
-            elif output_format == 'csv':
-                csv_d[name] = True
-            GOOD = GOOD + 1
-        else:
-            if output_format == 'standard':
-                print(red('{0} {1}'.format(badip, fail)))
-            elif output_format == 'csv':
-                csv_d[name] = False
-            BAD = BAD + 1
-
-    BAD = BAD
-    GOOD = GOOD
-
-    for bl in bls:
-        try:
-                my_resolver = dns.resolver.Resolver()
-                query = '.'.join(reversed(str(badip).split("."))) + "." + bl
-                my_resolver.timeout = 5
-                my_resolver.lifetime = 5
-                answers = my_resolver.query(query, "A")
-                answer_txt = my_resolver.query(query, "TXT")
-                if output_format == 'standard':
-                    print (red(badip + ' is listed in ' + bl)
-                           + ' (%s: %s)' % (answers[0], answer_txt[0]))
+        ret = content_test(url, ip_list, func)
+        for i in range(len(ret)):
+            badip = ip_list[i]
+            if ret[i]:
+                if args.success and output_format == 'standard':
+                    print(green('{0} {1}'.format(badip, succ)))
                 elif output_format == 'csv':
-                    csv_d[bl] = False
-                BAD = BAD + 1
+                    results[badip].update({name: True})
+                results[badip]['good'] += 1
+            else:
+                if output_format == 'standard':
+                    print(red('{0} {1}'.format(badip, fail)))
+                elif output_format == 'csv':
+                    results[badip].update({name: False})
+                    csv_d[name] = False
+                results[badip]['bad'] += 1
 
-        except dns.resolver.NXDOMAIN:
-            if output_format == 'standard':
-                print (green(badip + ' is not listed in ' + bl))
-            elif output_format == 'csv':
-                csv_d[bl] = True
-            GOOD = GOOD + 1
+    ip_bl_map = []
+    for ip in ip_list:
+        for bl in bls:
+            ip_bl_map.append((ip,bl))
 
-        except dns.resolver.Timeout:
-            if output_format == 'standard':
-                print (blink('WARNING: Timeout querying ' + bl))
-            elif output_format == 'csv':
-                csv_d[bl] = True
+    p = multiprocessing.pool.ThreadPool(len(bls))
+    ret = p.map(check_ip_bl, ip_bl_map)
+    for i in xrange(len(ret)):
+        good, msg = ret[i]
+        ip, bl = ip_bl_map[i]
+        if output_format == 'standard':
+            if not good or args.success:
+                print msg
+        else:
+            results[ip][bl] = good
+        if good:
+            results[ip]['good'] += 1
+        else:
+            results[ip]['bad'] += 1
 
-        except dns.resolver.NoNameservers:
-            if output_format == 'standard':
-                print (blink('WARNING: No nameservers for ' + bl))
-            elif output_format == 'csv':
-                csv_d[bl] = True
-
-        except dns.resolver.NoAnswer:
-            if output_format == 'standard':
-                print (blink('WARNING: No answer for ' + bl))
-            elif output_format == 'csv':
-                csv_d[bl] = True
-
-    if output_format == 'standard':
-        print(red('\n{0} is on {1}/{2} blacklists.\n'.format(badip, BAD, (GOOD+BAD))))
-    elif output_format == 'csv':
-        csv_d['ip'] = args.ip
-        csv_d['fqdn'] = reversed_dns
-        csv_d['rep'] = "{}/{}".format(BAD, GOOD+BAD)
-        write_csv([csv_d])
-
-
+    csv_list = []
+    for ip, val in results.iteritems():
+        if output_format == 'standard':
+            print(red('\n{0} is on {1}/{2} blacklists.\n'.format(ip, val['bad'], val['good']+val['bad'])))
+        elif output_format == 'csv':
+            bad = val.pop('bad')
+            good = val.pop('good')
+            csv_d = dict(val, ip=ip, rep="{}/{}".format(bad, good+bad))
+            csv_list.append(csv_d)
+    write_csv(csv_list)
 
 
