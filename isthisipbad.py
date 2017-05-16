@@ -49,7 +49,7 @@ def blue(text):
     return color(text, 34)
 
 
-def content_test(url, ip_list, func=None):
+def content_test(args):
     """
     Test the content of url's response to see if it contains badip.
         Args:
@@ -58,6 +58,7 @@ def content_test(url, ip_list, func=None):
         Returns:
             Boolean
     """
+    url, ip_list, func = args
     if func:
         return func(url, ip_list)
     else:
@@ -311,6 +312,18 @@ def check_ip_bl(ip_bl):
         return True, (blink('WARNING: No answer for ' + bl))
 
 
+def get_ip_details(badip):
+    try:
+        reversed_ = socket.getfqdn(badip)
+    except socket.herror:
+        reversed_ = None
+    try:
+        geo_ = urllib.urlopen('http://api.hackertarget.com/geoip/?q='+ badip).read().rstrip()
+    except IOError:
+        geo_ = None
+
+    return reversed_, geo_
+
 parser = argparse.ArgumentParser(description='Is This IP Bad?')
 input_parser = parser.add_mutually_exclusive_group(required=True)
 input_parser.add_argument('-i', '--ip', nargs='*', help='IP address to check', action='store', dest='ip')
@@ -350,12 +363,14 @@ if __name__ == "__main__":
                 ip_list = [badip]
 
     results = dict([(ip, {'good': 0, 'bad': 0}) for ip in ip_list])
-    #IP INFO
-    for badip in ip_list:
-        reversed_ = socket.getfqdn(badip)
-        geo_ = urllib.urlopen('http://api.hackertarget.com/geoip/?q='
-                           + badip).read().rstrip()
 
+    p = multiprocessing.pool.ThreadPool(70)
+
+    details = p.map(get_ip_details, ip_list)
+    #IP INFO
+    for i in xrange(len(ip_list)):
+        badip = ip_list[i]
+        reversed_, geo_ = details[i]
         if output_format == 'standard':
             print(blue('\nThe FQDN for {0} is {1}\n'.format(badip, reversed_)))
             print(red('Geolocation IP Information for {0}:'.format(badip)))
@@ -367,11 +382,18 @@ if __name__ == "__main__":
             results[badip].update(geo, fqdn=reversed_)
 
 
+    test_args = []
     for name, url, succ, fail, mal, func in URLS:
-        ret = content_test(url, ip_list, func)
-        for i in range(len(ret)):
-            badip = ip_list[i]
-            if ret[i]:
+        test_args.append((url, ip_list, func))
+
+    ret = p.map(content_test, test_args)
+
+    for i in xrange(len(URLS)):
+        name, url, succ, fail, mal, func = URLS[i]
+        answers_for_url = ret[i]
+        for j in range(len(ip_list)):
+            badip = ip_list[j]
+            if answers_for_url[j]:
                 if args.success and output_format == 'standard':
                     print(green('{0} {1}'.format(badip, succ)))
                 elif output_format == 'csv':
@@ -390,7 +412,7 @@ if __name__ == "__main__":
         for bl in bls:
             ip_bl_map.append((ip,bl))
 
-    p = multiprocessing.pool.ThreadPool(len(bls))
+
     ret = p.map(check_ip_bl, ip_bl_map)
     for i in xrange(len(ret)):
         good, msg = ret[i]
