@@ -25,6 +25,9 @@ import csv
 import multiprocessing
 import multiprocessing.pool
 import traceback
+import json
+
+NUM_OF_THREADS = 70
 
 def color(text, color_code):
     if sys.platform == "win32" and os.getenv("TERM") != "xterm":
@@ -77,7 +80,7 @@ def content_test(args):
                     ret.append(len(matches) == 0)
                 return ret
         except Exception, e:
-            traceback.print_exc()
+            #traceback.print_exc()
             sys.stderr.write("%s - Error! %s\n" % (url, e))
             return [True]*len(ip_list)
 
@@ -99,7 +102,7 @@ def spamhaus_check(url, ip_list):
                 ret.append(not bool(sum([netaddr.IPAddress(ip) in net for net in all_cidr])))
             return ret
     except Exception, e:
-        traceback.print_exc()
+        #traceback.print_exc()
         sys.stderr.write("%s - Error! %s\n" % (url, e))
         return [True]*len(ip_list)
 
@@ -263,28 +266,24 @@ URLS = [
      )]
 
 
-
-class GeoParser:
-    geo_regex = "(Country:\s(?P<country>.*))\n(State:\s(?P<state>.*))\n(City:\s(?P<city>.*))\n(Latitude:\s(?P<latitude>.*))\n(Longitude:\s(?P<longitude>.*))"
-
-    @staticmethod
-    def parse(geo):
-        match = re.search(GeoParser.geo_regex, geo)
-        return match.groupdict() if match else {}
-
-def write_csv(rows):
+def write_csv(rows, verbose):
     prefix_fields = ['ip', 'fqdn']
-    geo_fields = ['country', 'state', 'city', 'coord']
+    geo_fields = ['country', 'region', 'city', 'coord']
     url_fields = [url[0] for url in URLS]
     bl_fields = bls
     suffix_fields = ['rep']
-    keymap = prefix_fields + geo_fields + url_fields + bl_fields + suffix_fields
-
+    if verbose:
+        keymap = prefix_fields + geo_fields + url_fields + bl_fields + suffix_fields
+    else:
+        keymap = ['ip', 'rep']
     writer = csv.DictWriter(sys.stdout, fieldnames=keymap)
     writer.writeheader()
     for row in rows:
-        writer.writerow(row)
-
+        try:
+            writer.writerow(row)
+        except:
+            traceback.print_exc()
+            sys.stderr.write('CSV write error for line:' + str(row) + '\n')
 
 def check_ip_bl(ip_bl):
     badip, bl = ip_bl
@@ -318,9 +317,15 @@ def get_ip_details(badip):
     except socket.herror:
         reversed_ = None
     try:
-        geo_ = urllib.urlopen('http://api.hackertarget.com/geoip/?q='+ badip).read().rstrip()
+        geo_json = urllib.urlopen('http://freegeoip.net/json/'+ badip).read().rstrip()
+        geo_d = json.loads(geo_json)
+        geo_ = {'country': geo_d['country_name'].encode('utf-8'), 'region': geo_d['region_name'].encode('utf-8'), 'city': geo_d['city'].encode('utf-8'), 'coord': '{},{}'.format(geo_d['latitude'], geo_d['longitude'])}
     except IOError:
         geo_ = None
+    except ValueError:
+        geo_ = None
+    except:
+        sys.stderr.write("%s - Error! %s\n" % (url, e))
 
     return reversed_, geo_
 
@@ -328,8 +333,9 @@ parser = argparse.ArgumentParser(description='Is This IP Bad?')
 input_parser = parser.add_mutually_exclusive_group(required=True)
 input_parser.add_argument('-i', '--ip', nargs='*', help='IP address to check', action='store', dest='ip')
 input_parser.add_argument('-', '--stdin', help='Get IP addresses from stdin CTRL+D to stop (EOF)', action='store_true')
-parser.add_argument('--success', help='Also display GOOD', required=False, action="store_true")
+parser.add_argument('--verbose', '-v', help='Display details', required=False, action="store_true")
 parser.add_argument('--output', '-o', choices=['csv', 'standard'], default='standard', help='Output format', required=False, action="store", dest='output')
+parser.add_argument('--progress', '-p', help='Show some progress', action="store_true", dest='progress')
 
 
 if __name__ == "__main__":
@@ -364,7 +370,7 @@ if __name__ == "__main__":
 
     results = dict([(ip, {'good': 0, 'bad': 0}) for ip in ip_list])
 
-    p = multiprocessing.pool.ThreadPool(70)
+    p = multiprocessing.pool.ThreadPool(NUM_OF_THREADS)
 
     details = p.map(get_ip_details, ip_list)
     #IP INFO
@@ -377,9 +383,7 @@ if __name__ == "__main__":
             print(blue(geo_))
             print('\n')
         elif output_format == 'csv':
-            geo = GeoParser.parse(geo_)
-            geo['coord'] = "{},{}".format(geo.pop('latitude', ''), geo.pop('longitude', ''))
-            results[badip].update(geo, fqdn=reversed_)
+            results[badip].update(geo_, fqdn=reversed_)
 
 
     test_args = []
@@ -394,17 +398,16 @@ if __name__ == "__main__":
         for j in range(len(ip_list)):
             badip = ip_list[j]
             if answers_for_url[j]:
-                if args.success and output_format == 'standard':
+                if args.verbose and output_format == 'standard':
                     print(green('{0} {1}'.format(badip, succ)))
                 elif output_format == 'csv':
-                    results[badip].update({name: True})
+                    results[badip].update({name: 'no'})
                 results[badip]['good'] += 1
             else:
                 if output_format == 'standard':
                     print(red('{0} {1}'.format(badip, fail)))
                 elif output_format == 'csv':
-                    results[badip].update({name: False})
-                    csv_d[name] = False
+                    results[badip].update({name: 'yes'})
                 results[badip]['bad'] += 1
 
     ip_bl_map = []
@@ -418,10 +421,10 @@ if __name__ == "__main__":
         good, msg = ret[i]
         ip, bl = ip_bl_map[i]
         if output_format == 'standard':
-            if not good or args.success:
+            if not good or args.verbose:
                 print msg
         else:
-            results[ip][bl] = good
+            results[ip][bl] = 'no' if good else 'yes'
         if good:
             results[ip]['good'] += 1
         else:
@@ -434,8 +437,13 @@ if __name__ == "__main__":
         elif output_format == 'csv':
             bad = val.pop('bad')
             good = val.pop('good')
-            csv_d = dict(val, ip=ip, rep="{}/{}".format(bad, good+bad))
+            if args.verbose:
+                csv_d = dict(val, ip=ip, rep="{}/{}".format(good, good+bad))
+            else:
+                csv_d = {'ip': ip, 'rep': "{}/{}".format(good, good+bad)}
             csv_list.append(csv_d)
-    write_csv(csv_list)
+
+    if output_format == 'csv':
+        write_csv(csv_list, args.verbose)
 
 
