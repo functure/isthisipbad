@@ -347,7 +347,8 @@ if __name__ == "__main__":
     elif args.stdin:
         ip_list = []
         for line in sys.stdin:
-            ip_list.append(line.strip())
+            if line.strip():
+                ip_list.append(line.strip())
     else:
         my_ip = urlopen('http://icanhazip.com').read().rstrip()
         output_format = 'standard'
