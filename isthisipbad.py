@@ -272,13 +272,25 @@ def write_csv(rows, verbose):
     url_fields = [url[0] for url in URLS]
     bl_fields = bls
     suffix_fields = ['rep']
-    if verbose:
+    if verbose == 2:
         keymap = prefix_fields + geo_fields + url_fields + bl_fields + suffix_fields
     else:
-        keymap = ['ip', 'rep']
+        for row in rows:
+            bans = []
+            for list_ in url_fields + bl_fields:
+                if row[list_] == 'yes':
+                    bans.append(list_)
+            row['bans'] = ', '.join(bans)
+        if verbose == 0:
+            keymap = ['ip', 'rep', 'bans']
+        else:
+            keymap = ['ip'] + geo_fields + ['rep', 'bans']
+
+
     writer = csv.DictWriter(sys.stdout, fieldnames=keymap)
     writer.writeheader()
     for row in rows:
+        row = {k : v for k,v in filter(lambda t: t[0] in keymap, row.iteritems())}
         try:
             writer.writerow(row)
         except:
@@ -439,12 +451,16 @@ if __name__ == "__main__":
             bad = val.pop('bad')
             good = val.pop('good')
             if args.verbose:
-                csv_d = dict(val, ip=ip, rep="{}/{}".format(good, good+bad))
+                csv_d = dict(val, ip=ip, rep="{}/{}".format(bad, good+bad))
             else:
-                csv_d = {'ip': ip, 'rep': "{}/{}".format(good, good+bad)}
+                csv_d = {'ip': ip, 'rep': "{}/{}".format(bad, good+bad)}
             csv_list.append(csv_d)
 
     if output_format == 'csv':
-        write_csv(csv_list, args.verbose)
+        if args.verbose:
+            verbose = 1
+        else:
+            verbose = 0
+        write_csv(csv_list, verbose)
 
 
