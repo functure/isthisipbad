@@ -1,3 +1,6 @@
+# Indirmek
+wget https://raw.githubusercontent.com/functure/isthisipbad/master/isthisipbad.py
+
 # Kullanım
 python isthisipbad.py
 ./isthisipbad.py
