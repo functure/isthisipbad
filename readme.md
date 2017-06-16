@@ -1,5 +1,6 @@
 # Indirmek
 wget https://raw.githubusercontent.com/functure/isthisipbad/master/isthisipbad.py
+chmod 755 isthisipbad.py
 
 # Kullanım
 python isthisipbad.py
