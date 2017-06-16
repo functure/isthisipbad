@@ -450,10 +450,13 @@ if __name__ == "__main__":
         elif output_format == 'csv':
             bad = val.pop('bad')
             good = val.pop('good')
+            """
             if args.verbose:
                 csv_d = dict(val, ip=ip, rep="{}/{}".format(bad, good+bad))
             else:
                 csv_d = {'ip': ip, 'rep': "{}/{}".format(bad, good+bad)}
+            """
+            csv_d = dict(val, ip=ip, rep="{}/{}".format(bad, good+bad))
             csv_list.append(csv_d)
 
     if output_format == 'csv':
