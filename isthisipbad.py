@@ -27,7 +27,7 @@ import multiprocessing.pool
 import traceback
 import json
 
-NUM_OF_THREADS = 70
+NUM_OF_THREADS = 1000
 
 def color(text, color_code):
     if sys.platform == "win32" and os.getenv("TERM") != "xterm":
