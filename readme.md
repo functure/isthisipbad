@@ -3,6 +3,7 @@ wget https://raw.githubusercontent.com/functure/isthisipbad/master/isthisipbad.p
 
 # Kullanım
 python isthisipbad.py
+
 ./isthisipbad.py
 
 # Yardım
@@ -26,7 +27,9 @@ python isthisipbad.py
 
 # Ornek Girdi Dosyasi
 10.200.1.15
+
 10.200.1.13
+
 8.8.8.8
 
 # Dosyaya CSV Formatinda Cikti Almak
