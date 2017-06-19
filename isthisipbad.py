@@ -27,7 +27,7 @@ import multiprocessing.pool
 import traceback
 import json
 
-NUM_OF_THREADS = 1000
+
 
 def color(text, color_code):
     if sys.platform == "win32" and os.getenv("TERM") != "xterm":
@@ -62,8 +62,10 @@ def content_test(args):
             Boolean
     """
     url, ip_list, func = args
+    
     if func:
-        return func(url, ip_list)
+        ret = func(url, ip_list)
+	return ret
     else:
         try:
             request = urllib2.Request(url)
@@ -302,8 +304,8 @@ def check_ip_bl(ip_bl):
     try:
         my_resolver = dns.resolver.Resolver()
         query = '.'.join(reversed(str(badip).split("."))) + "." + bl
-        my_resolver.timeout = 5
-        my_resolver.lifetime = 5
+        my_resolver.timeout = 2.0
+        #my_resolver.lifetime = 5
         answers = my_resolver.query(query, "A")
         answer_txt = my_resolver.query(query, "TXT")
 
@@ -329,13 +331,15 @@ def get_ip_details(badip):
     except socket.herror:
         reversed_ = None
     try:
-        geo_json = urllib.urlopen('http://freegeoip.net/json/'+ badip).read().rstrip()
+        fd = urllib.urlopen('http://freegeoip.net/json/'+ badip)
+	geo_json = fd.read().rstrip()
+	fd.close()
         geo_d = json.loads(geo_json)
         geo_ = {'country': geo_d['country_name'].encode('utf-8'), 'region': geo_d['region_name'].encode('utf-8'), 'city': geo_d['city'].encode('utf-8'), 'coord': '{},{}'.format(geo_d['latitude'], geo_d['longitude'])}
     except IOError:
-        geo_ = None
+        geo_ = {}
     except ValueError:
-        geo_ = None
+        geo_ = {}
     except:
         sys.stderr.write("%s - Error! %s\n" % (url, e))
 
@@ -348,6 +352,7 @@ input_parser.add_argument('-', '--stdin', help='Get IP addresses from stdin CTRL
 parser.add_argument('--verbose', '-v', help='Display details', required=False, action="store_true")
 parser.add_argument('--output', '-o', choices=['csv', 'standard'], default='standard', help='Output format', required=False, action="store", dest='output')
 parser.add_argument('--progress', '-p', help='Show some progress', action="store_true", dest='progress')
+parser.add_argument('--threads', '-t', help='Number of threads (Default:600)', default=600, action="store", dest='threads')
 
 
 if __name__ == "__main__":
@@ -383,9 +388,10 @@ if __name__ == "__main__":
 
     results = dict([(ip, {'good': 0, 'bad': 0}) for ip in ip_list])
 
-    p = multiprocessing.pool.ThreadPool(NUM_OF_THREADS)
+    p = multiprocessing.pool.ThreadPool(int(args.threads))
 
     details = p.map(get_ip_details, ip_list)
+
     #IP INFO
     for i in xrange(len(ip_list)):
         badip = ip_list[i]
@@ -450,12 +456,6 @@ if __name__ == "__main__":
         elif output_format == 'csv':
             bad = val.pop('bad')
             good = val.pop('good')
-            """
-            if args.verbose:
-                csv_d = dict(val, ip=ip, rep="{}/{}".format(bad, good+bad))
-            else:
-                csv_d = {'ip': ip, 'rep': "{}/{}".format(bad, good+bad)}
-            """
             csv_d = dict(val, ip=ip, rep="{}/{}".format(bad, good+bad))
             csv_list.append(csv_d)
 
